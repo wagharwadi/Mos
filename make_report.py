@@ -45,90 +45,68 @@ def code(src, out_text):
 kT = 8.617333e-5 * P["T"]
 q1, q2, q3, q4, q5 = R["q1"], R["q2"], R["q3"], R["q4"], R["q5"]
 
-# ----------------------------------------------------------------------------- title
+# ----------------------------------------------------------------------------- title + model
+r_bind = np.exp(P['E_bind'] / kT)
+r_edge = np.exp((P['eps_S'] - P['eps_Mo']) / kT)
 md(f"""
 # Kinetic Monte Carlo model of MoS₂ flake growth
 
-**Task:** CVD conversion of MoO₃ to MoS₂ on a triangular Mo lattice, simulated with
-kinetic Monte Carlo. Code: `kmc/` (model), `run_experiments.py` (all results),
-`make_report.py` (this notebook).
+Code: `kmc/` (model), `run_experiments.py` (all results), `make_report.py` (this report). Repository README explains how to run it.
 
-## 1. The model
+## 1. Model
 
-* **Lattice.** {P['L']}×{P['L']} triangular lattice of Mo sites (6 neighbours each). Mo never moves;
-  each site is either *oxide* or *MoS₂*, and only oxide → MoS₂ is allowed. The flake grows
-  as a conversion front starting from **one converted site in the centre**.
-* **Sulfur.** Every oxide site has {P['S_max']} S slots (MoS₂ has 2 S per Mo).
-* **Three events** at an oxide site that touches the flake (*n* = its number of MoS₂ neighbours):
+**Lattice and states.** {P['L']}×{P['L']} triangular lattice of Mo sites (periodic, run stops near the border). Mo never moves;
+a site is *oxide* or *MoS₂* and only oxide → MoS₂ is allowed, so the flake grows as a conversion front from **one
+converted site in the centre**. Each oxide site has {P['S_max']} S slots. At an oxide site touching the flake
+(*n* = number of MoS₂ neighbours) three events are possible:
+S **adsorption** $k_{{ads}}P\\,(S_{{max}}-s)$; S **desorption** $s\\,\\nu e^{{-(E_{{des}}+nE_{{bind}})/kT}}$ (harder with more MoS₂
+neighbours); **conversion**, only when $s={P['S_req']}$, at $\\nu e^{{-(E_{{conv}}-n_\\Delta\\varepsilon_S-n_\\nabla\\varepsilon_{{Mo}})/kT}}$.
 
-| event | rate |
-|---|---|
-| S adsorption | $k_{{ads}}\\,P\\,(S_{{max}}-s)$, proportional to pressure |
-| S desorption | $s\\,\\nu\\,e^{{-(E_{{des}}+n\\,E_{{bind}})/kT}}$, harder with more MoS₂ neighbours |
-| conversion (only if $s = {P['S_req']}$) | $\\nu\\,e^{{-(E_{{conv}}-n_\\Delta\\varepsilon_S-n_\\nabla\\varepsilon_{{Mo}})/kT}}$ |
+**Two edge types, no imposed shape.** The 6 unit triangles around a site alternate Δ/∇. In 1H-MoS₂ the S columns sit over
+Δ only. A site joining an **S-edge** closes a Δ triangle (bridging S already present, $\\varepsilon_S$). A site joining a
+**Mo-edge** closes a ∇ triangle ($\\varepsilon_{{Mo}}$). Opposite-facing zigzag edges are always of opposite type, so S- and
+Mo-edges alternate around the flake. The code only counts triangles and never refers to a shape.
 
-* **Two edge types without forcing a shape.** The 6 unit triangles around a site alternate
-  between Δ and ∇ orientation. In 1H-MoS₂ the S columns sit over the Δ triangles only. A site joining
-  an **S-terminated edge** closes a Δ triangle, so its bridging S is already there, which makes
-  conversion easier ($\\varepsilon_S$). A site joining a **Mo-terminated edge** closes a ∇ triangle
-  ($\\varepsilon_{{Mo}}$). Edges facing opposite directions are always of opposite type, so the
-  six possible zigzag edges alternate S, Mo, S, Mo… The code only counts triangles and never mentions a
-  shape.
-* **kMC loop (BKL/Gillespie).** All event rates are kept in a binary sum tree. Each step picks one
-  event with probability ∝ its rate (O(log N)), advances time by $\\Delta t=-\\ln u/R_{{tot}}$,
-  and updates only the affected sites. There is no fixed time step.
-* **Exact shortcut.** Sulfur far from the flake never affects anything, so it is not simulated. A site gets its
-  steady-state sulfur (binomial with $\\theta_0$) the moment it first touches the flake. An independent process
-  that starts in steady state stays there, so this is exact.
+**kMC loop (BKL/Gillespie).** Per-site rate sums live in a binary sum tree. Each step picks one event with probability ∝ rate
+(O(log N)), advances $\\Delta t=-\\ln u/R_{{tot}}$ and updates only the affected sites. There is no fixed time step.
+Sulfur on sites away from the flake is independent of everything, so it is drawn from its steady state
+(binomial, $\\theta_0$) when a site first touches the flake. This is exact, and it saves millions of irrelevant events.
+Validation: the measured mean time to the first conversion at 1 Pa is 18.3 s against 18.4 s analytic (40 runs).
 
-### Parameters and why
-
-| parameter | value | reasoning |
+| parameter | value | why |
 |---|---|---|
-| $T$ | {P['T']:.0f} K | typical CVD temperature (650–850 °C) |
-| $\\nu$ | {P['nu']:.0e} s⁻¹ | lattice-vibration attempt frequency |
-| $k_{{ads}}$ | {P['k_ads']:.0f} Pa⁻¹s⁻¹ per slot | Hertz–Knudsen S₂ flux on one 8.6 Å² site ≈ 900 Pa⁻¹s⁻¹, sticking ≈ 0.1 |
-| $E_{{des}}$ | {P['E_des']} eV | weakly held S on oxide (≈ 65 µs); puts the growth threshold at 0.1–1 Pa |
-| $E_{{bind}}$ | {P['E_bind']} eV / neighbour | ≈ one extra weak Mo–S bond; each neighbour keeps S {np.exp(P['E_bind']/kT):.0f}× longer |
-| $E_{{conv}}$ | {P['E_conv']} eV | bare sulfidation ≈ 1 s⁻¹, slow unless the site is embedded in the flake |
-| $\\varepsilon_S,\\ \\varepsilon_{{Mo}}$ | {P['eps_S']}, {P['eps_Mo']} eV / triangle | S-edges join {np.exp((P['eps_S']-P['eps_Mo'])/kT):.1f}× faster, so Mo-edges bound the flake, as seen in S-rich CVD |
-| growth window | {P['t_max']:.0f} s | how long we watch. Growth slower than this counts as "stopped" |
+| $T$, $\\nu$ | {P['T']:.0f} K, 10¹³ s⁻¹ | CVD growth temperature (650–850 °C); lattice attempt frequency |
+| $k_{{ads}}$ | {P['k_ads']:.0f} Pa⁻¹s⁻¹ per slot | Hertz–Knudsen S₂ flux on an 8.6 Å² site ≈ 900 Pa⁻¹s⁻¹, sticking ≈ 0.1 |
+| $E_{{des}}$ | {P['E_des']} eV | weakly held S on oxide (≈ 65 µs); puts the growth threshold at a realistic 0.1–1 Pa |
+| $E_{{bind}}$ | {P['E_bind']} eV / neighbour | ≈ one weak extra Mo–S bond; each neighbour keeps S {r_bind:.0f}× longer |
+| $E_{{conv}}$ | {P['E_conv']} eV | bare sulfidation ≈ 1 s⁻¹: slow unless the site is embedded in the flake |
+| $\\varepsilon_S$ / $\\varepsilon_{{Mo}}$ | {P['eps_S']} / {P['eps_Mo']} eV per triangle | S-edges join {r_edge:.1f}× faster, so Mo-edges bound the flake (S-rich CVD) |
+| growth window | {P['t_max']:.0f} s | growth slower than this counts as "stopped" |
 """)
 
 # ----------------------------------------------------------------------------- Q1
-t_mean = np.mean(q1["time_to_border_s"])
 md(f"""
-## Q1. High sulfur pressure ({q1['P']:g} Pa): a triangle grows
+## Q1. High pressure ({q1['P']:g} Pa): a triangle grows
 
-The flake reaches the lattice border (≈{np.mean(q1['final_size']):.0f} Mo sites) after
-{t_mean:.2f} s on average ({len(q1['final_size'])} runs). It is a clear triangle: the 3-fold asymmetry
-$A_3$ = {np.mean(q1['A3']):.2f} (0 for a hexagon or circle, ≈ 0.25 for a triangle), and
-{q1['edge_sites_S_vs_Mo'][1]} of {sum(q1['edge_sites_S_vs_Mo'])} flat-edge sites are on Mo-edges.
-
-**Size against time.** After a short wait for the lone nucleus to make its first conversions, the
-equivalent side $\\sqrt{{2N}}$ grows **linearly** with time
-(≈ {np.mean(q1['side_velocity_sites_per_s']):.0f} sites/s), i.e. $N \\propto t^2$. Each Mo-edge advances
-at constant speed: a new row has to nucleate on the slow Mo-edge, and then it zips along quickly through kinks.
-The colour bands mark the flake outline at earlier times. It is triangular from very early on.
+The flake reaches the border (≈{np.mean(q1['final_size']):.0f} sites) in {np.mean(q1['time_to_border_s']):.1f} s. It is a clear triangle:
+3-fold asymmetry $A_3$ = {np.mean(q1['A3']):.2f} (0 for a hexagon, ≈ 0.25 for a triangle), and {q1['edge_sites_S_vs_Mo'][1]}/{sum(q1['edge_sites_S_vs_Mo'])}
+flat-edge sites lie on Mo-edges. After a short incubation of the lone nucleus, the side $\\sqrt{{2N}}$ grows **linearly** in time
+(≈ {np.mean(q1['side_velocity_sites_per_s']):.0f} sites/s, so $N\\propto t^2$). Each slow Mo-edge advances at constant speed by
+nucleating a new row and zipping it along through kinks. The colour bands (earlier outlines) show the shape is triangular throughout.
 """)
 fig("q1_triangle_growth.png")
 md("![growth at high pressure](results/q1_growth_high_pressure.gif)")
 
 # ----------------------------------------------------------------------------- Q2
-rows = "\n".join(f"| {r['case']} | {r['rate_ratio_S_over_Mo']:.2f} | {r['A3_mean']:.2f} ± {r['A3_std']:.2f} | {r['Mo_edge_fraction']:.0%} |" for r in q2)
+eq = [r for r in q2 if r["case"].startswith("equal")][0]
 md(f"""
-## Q2. Equal edge rates: the flake becomes a hexagon
+## Q2. Equal edge rates → hexagon
 
-| case | $k_S/k_{{Mo}}$ | $A_3$ | Mo-edge share |
-|---|---|---|---|
-{rows}
-
-**Why.** A growing crystal ends up bounded by its **slowest** edges (the kinetic Wulff
-construction). A fast edge outruns its neighbours, gets shorter and disappears into a corner. The slow edges
-are left behind and get longer. With S-edges fast, the three Mo-edges survive and form a triangle. With equal rates
-there is no winner: all six zigzag edges survive and the flake is a **hexagon** ($A_3 \\approx 0$, 50/50 edges).
-Reversing the rates gives a triangle again, but rotated by 180° and bounded by S-edges. Triangles in experiment
-therefore indicate that one edge termination grows much faster than the other, which depends on the S:Mo ratio.
+With $k_S=k_{{Mo}}$ the flake is a **hexagon**: $A_3$ = {eq['A3_mean']:.2f} and {eq['Mo_edge_fraction']:.0%} of facets are Mo-edges.
+A crystal ends up bounded by its **slowest** edges (kinetic Wulff construction). A fast edge outruns its neighbours, shortens
+and vanishes into a corner, while slow edges lengthen. With S-edges fast, the 3 Mo-edges survive and form a triangle.
+With equal rates all 6 edges survive and form a hexagon. Shrinking the difference gives truncated triangles. Reversing it gives
+a triangle rotated by 180° and bounded by S-edges. The triangle therefore comes purely from the edge-rate asymmetry.
 """)
 fig("q2_edge_rates.png")
 
@@ -136,108 +114,66 @@ fig("q2_edge_rates.png")
 P_all = [r["P"] for r in q3 if r["fraction_grown"] == 1.0]
 P_none = [r["P"] for r in q3 if r["fraction_grown"] == 0.0]
 P_on, P_off = min(P_all), max(P_none)
-rows = "\n".join(f"| {r['P']:g} | {r['fraction_grown']:.0%} | {r['median_size']:.0f} | {r['velocity_mean']:.1f} |" for r in q3)
+frac = ", ".join(f"{r['P']:g}: {r['fraction_grown']:.0%}" for r in q3 if P_off <= r["P"] <= 0.6)
 md(f"""
-## Q3. Lowering the sulfur pressure: where does growth stop?
+## Q3. Lowering the pressure: where growth stops
 
-One nucleus, {len(q3[0]['sizes'])} runs per pressure, {P['t_max']:.0f} s growth window:
-
-| P (Pa) | nuclei that grew | median final size | edge speed (sites/s) |
-|---|---|---|---|
-{rows}
-
-* Down to **{P_on:g} Pa** every nucleus grows into a full triangle. The growth is slower (the edge speed falls
-  steeply with P) but the shape is unchanged.
-* Between {P_on:g} and {P_off:g} Pa it becomes a **lottery**. Some nuclei never get going, but those that do
-  grow all the way.
-* At **{P_off:g} Pa and below**, no single nucleus grows: the flake stays at 1 site.
-
-So growth stops at **P ≈ {P_off:g}–{P_on:g} Pa** for a single nucleus. Because conversion is irreversible in this
-model, "stop" means the rate falls far below 1/(growth window). The transition is sharp anyway: the rate at the
-nucleus scales as $P^2$ (two S needed), so a 5× longer window would only move the threshold by √5.
+With one nucleus, {len(q3[0]['sizes'])} runs per pressure: every nucleus grows down to **{P_on:g} Pa**. The shape is unchanged,
+but the edge speed falls from {q3[0]['velocity_mean']:.0f} to ≈ 5 sites/s. Below that, growth becomes a lottery
+(fraction grown, P in Pa: {frac}). **At {P_off:g} Pa and below no nucleus grows.** Single-nucleus growth therefore stops at
+**≈ {P_off:g}–{P_on:g} Pa**. Because conversion is irreversible, "stop" means the rate drops far below 1/(growth window). The threshold
+is still sharp: the nucleus rate scales as $P^2$ (two S are needed), so a 5× longer window moves it only by √5.
 """)
 fig("q3_pressure_sweep.png")
 
 # ----------------------------------------------------------------------------- Q4
-cfg = q4["edge_configs"]
-rows = "\n".join(f"| {c['config']} | {c['k_des_per_S']:.3g} | {c['P_half_coverage_Pa']:.3g} | {c['k_conv']:.3g} | {c['p_convert_before_S_leaves']:.1e} |" for c in cfg)
-ev = q4["event_counts"]
-P_st = q5["P"]                     # the "stall" pressure used in Q4b and Q5
-stall = ev[str(P_st)]
-cs = q4["critical_size"]
+cfg = {c["n"]: c for c in q4["edge_configs"]}
+c1 = q4["edge_configs"][0]
+P_st = q5["P"]
+stall = q4["event_counts"][str(P_st)]
 md(f"""
 ## Q4. Why it stops, and why small flakes are hit hardest
 
-**Desorption wins.** An edge site can only convert while it holds both S atoms. That turns it into a race between
-*conversion* and *an S atom leaving*:
+**Desorption wins at the edge.** A site converts only while it holds both S atoms, so each attempt is a race between conversion
+and an S atom leaving. Next to a lone nucleus ($n$ = 1) an S atom leaves ≈ {c1['k_des_per_S']:.0f} s⁻¹, while conversion runs at
+{c1['k_conv']:.1f} s⁻¹. A full site converts first only {100*c1['p_convert_before_S_leaves']:.2f}% of the time, and at low P it is
+rarely full ($\\theta^2\\ll1$). The effective rate $k_{{conv}}\\theta(n)^2$ (left) falls as $P^2$ and is the first to drop below
+1/(growth window) at poorly bound sites. In the stalled runs at {P_st:g} Pa (middle), sites around the nucleus lost
+{stall['desorptions_by_n'][0]:,} S atoms and converted **0** times.
 
-| edge site | $k_{{des}}$ per S (s⁻¹) | $P_{{1/2}}$ for half-filled slots (Pa) | $k_{{conv}}$ (s⁻¹) | P(convert before an S leaves) |
-|---|---|---|---|---|
-{rows}
-
-At a site touching the flake with only **one** neighbour, an S atom leaves ≈ 800 times per second, while
-conversion happens about once per second. At low P the site is almost never full ($\\theta^2 \\ll 1$),
-and when it is full, an S atom leaves first > 99.9% of the time. The effective attachment rate
-$k_{{conv}}\\theta(n)^2$ (left panel) falls as $P^2$ and drops below 1/(growth window) first for the
-weakly bound sites. In the stalled runs at {P_st:g} Pa (middle panel), the edge sites around the lone
-nucleus lost {stall['desorptions_by_n'][0]} S atoms and converted **0** times.
-
-**Why size matters.** Each MoS₂ neighbour raises the desorption barrier by {P['E_bind']} eV, so S stays
-{np.exp(P['E_bind']/kT):.0f}× longer per neighbour, and the chance of holding 2 S rises by ≈ {np.exp(2*P['E_bind']/kT):.0f}×.
-* A **lone nucleus** offers only $n=1$ sites, the worst case.
-* A flake with straight edges offers $n=2$ sites (to start a new row) and $n=3$ kinks (to finish it).
-* A larger flake also has longer edges, so there are more places to start a row.
-
-The right panel starts from hexagonal seeds of increasing size. The pressure at which growth stops falls
-from ≈{P_off:g}–{P_on:g} Pa for a single site to ≈ 0.01–0.02 Pa for 7–37 sites, ≈ 0.007 Pa for 91 sites and
-≈ 0.005 Pa for 217 sites. Bigger nuclei keep growing at lower pressure. This is a
-**critical nucleus size**: the kinetic version of the Gibbs–Thomson effect. Sharply curved, poorly coordinated
-edges lose their sulfur before they can convert.
+**Size matters** because every MoS₂ neighbour raises the desorption barrier by {P['E_bind']} eV: S stays {r_bind:.0f}× longer and
+the chance of holding 2 S rises ≈ {r_bind**2:.0f}×. A lone nucleus offers only $n=1$ sites. A faceted flake offers $n=2$
+(row start, P(convert) = {cfg[2]['p_convert_before_S_leaves']:.2f}) and $n=3$ kinks ({cfg[3]['p_convert_before_S_leaves']:.2f}), and a
+bigger flake has more places to start a row. Starting from larger seeds (right), the stopping pressure falls from ≈ {P_off:g} Pa
+(1 site) to ≈ 0.01 Pa (7–37 sites) and ≈ 0.005 Pa (217 sites). This is a **critical nucleus size**, a kinetic analogue of
+Gibbs–Thomson: sharply curved, poorly coordinated edges lose their sulfur before they can convert.
 """)
 fig("q4_why_it_stops.png")
 
 # ----------------------------------------------------------------------------- Q5
-rows = "\n".join(f"| {r['separation']} | {r['fraction_grown']:.0%} | {int(np.median(r['sizes']))} |" for r in q5["pairs"])
+pairs = {r["separation"]: r["fraction_grown"] for r in q5["pairs"]}
 single_grew = sum(s >= 50 for s in q5["single_sizes"])
 md(f"""
-## Q5. A second nucleus close to the first, at {q5['P']:g} Pa
+## Q5. A second nucleus at {P_st:g} Pa
 
-At {q5['P']:g} Pa a lone nucleus never grows ({single_grew}/{len(q5['single_sizes'])} runs).
-Adding a second nucleus at distance *d* (lattice hops):
-
-| d | pairs that grew | median final size |
-|---|---|---|
-{rows}
-
-**What happens.** At *d* = 2 the two nuclei share an oxide neighbour (black ring in the figure). That site has
-$n = 2$, so its S stays {np.exp(P['E_bind']/kT):.0f}× longer and it is full ≈ 200× more often than any site around
-a lone nucleus. It converts within tens of seconds and **bridges** the two nuclei. The new 3-site cluster
-offers more $n=2$ and $n=3$ sites, so the next conversions are even faster and the pair grows into
-**one single triangle**. At *d* = 1 the two nuclei already form a dimer, which works the same way. At *d* ≥ 3 the
-nuclei share no neighbour, so each one behaves as a lone nucleus and both stall.
-
-**Why it matters.** A flake that is too small to grow alone becomes supercritical when its edge
-sites get extra MoS₂ neighbours from another flake. Neighbouring nuclei cooperate, and this is the
-same physics as Q4. In real CVD this favours growth where nuclei are dense (substrate steps, seeds,
-defects) and leads to coalescence of nearby nuclei into one larger flake.
+Alone, a nucleus never grows here ({single_grew}/{len(q5['single_sizes'])}). With a second nucleus 1 or 2 hops away, **{pairs[1]:.0%} / {pairs[2]:.0%}**
+of pairs grow into a single full triangle. At 3, 4 or 6 hops, **{pairs[3]:.0%}** do. At 2 hops the nuclei share an oxide neighbour (black ring) with
+$n$ = 2: its S stays {r_bind:.0f}× longer, so it is full ≈ 200× more often than any site around a lone nucleus. It converts and **bridges**
+the nuclei, and the new cluster offers $n$ = 2–3 sites, so growth runs away. At 1 hop the nuclei already form a dimer. At ≥ 3 hops they
+share no neighbour and each stalls alone. Nearby nuclei **cooperate**: together they exceed the critical size of Q4. In real CVD this favours
+growth where nuclei are dense (steps, seeds, defects) and the coalescence of close nuclei into one flake.
 """)
 fig("q5_two_nuclei.png")
 md("![two nuclei](results/q5_two_nuclei.gif)")
 
 # ----------------------------------------------------------------------------- improvements
 md("""
-## What I would improve with more time
+## With more time I would add
 
-1. **Reversibility.** Let MoS₂ edge sites lose S and revert (or let Mo etch away as volatile MoO₃₋ₓ). Then a
-   true critical nucleus and an equilibrium shape exist, instead of a "slow enough" kinetic stop.
-2. **Sulfur transport.** Model S diffusion on the surface and depletion of S₂ above the flake (boundary layer).
-   Couple *P* to the chamber-scale CVD model, so each region of the substrate sees its own local pressure.
-3. **Barriers from DFT.** Replace the hand-picked $E$ and $\\varepsilon$ with DFT/NEB values for S₂ adsorption,
-   desorption and Mo-edge versus S-edge sulfidation, and add temperature sweeps (Arrhenius plots of growth speed).
-4. **Mo supply.** Here the Mo is already on the substrate. Real growth also involves MoO₃₋ₓ vapour and
-   Mo/S ratio effects, which switch the slow edge and give truncated triangles and hexagons.
-5. **Scale and speed.** Use a Numba or C++ engine and bigger lattices (10⁶ sites). Run many nuclei to get size
-   distributions and nucleation density versus P, and to see grain boundaries when misoriented flakes meet.
+**Reversibility** (MoS₂ → oxide, MoO₃₋ₓ volatilisation), for a true thermodynamic critical nucleus. **Sulfur transport**: surface
+diffusion and S₂ depletion above the flake, with *P* coupled to the chamber-scale CVD model. **DFT/NEB barriers** instead of
+hand-picked values, plus temperature sweeps. **Mo/S-ratio effects** that switch the slow edge (truncated triangles). **A faster engine**
+(Numba/C++, 10⁶ sites) for many nuclei, size distributions and grain boundaries between merging misoriented flakes.
 """)
 
 nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
@@ -291,8 +227,12 @@ def export_html():
  img{max-width:100%}
  img.gif{width:340px;display:block;margin:8px auto}
  .fig{text-align:center;margin:8px 0}
- @media print{body{max-width:none;font-size:10.5pt} img.gif{display:none} h2{page-break-after:avoid}
-              .fig{page-break-inside:avoid}}
+ @page{size:A4;margin:11mm 13mm}
+ @media print{body{max-width:none;font-size:8.6pt;line-height:1.32;padding:0}
+   h1{font-size:14pt;margin:0 0 4px;padding-bottom:2px} h2{font-size:10.5pt;margin:7px 0 2px;page-break-after:avoid}
+   p{margin:3px 0} table{font-size:7.8pt;margin:3px 0} th,td{padding:1px 5px}
+   img.gif{display:none} .fig{page-break-inside:avoid;margin:2px 0} .fig img{max-height:45mm;max-width:100%}
+   .katex{font-size:1.02em}}
 </style></head><body><div id="out"></div>
 <script id="data" type="application/json">__DATA__</script>
 <script>
