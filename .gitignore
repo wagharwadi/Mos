@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+results/run_log.txt
+
+# unrelated files that live in this folder
+Final_Submission/
+Final_Submission.zip
+
+# private task email (not part of the code)
+KMC Task from BITS Pilani Mail.txt
